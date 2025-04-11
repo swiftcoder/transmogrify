@@ -84,7 +84,7 @@ fn main() -> anyhow::Result<()> {
 
     let top_level_statement = or([struct_, function_]);
 
-    let rule = seq([repeat(top_level_statement)]);
+    let rule = seq([repeat(top_level_statement), eof()]);
 
     let result = rule.parse(
         &mut parser,

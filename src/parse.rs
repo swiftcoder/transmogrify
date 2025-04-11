@@ -1,4 +1,11 @@
-use std::{cell::RefCell, collections::HashMap, error::Error, fmt::Display, ops::Range, rc::Rc};
+use std::{
+    cell::RefCell,
+    collections::{BTreeSet, HashMap},
+    error::Error,
+    fmt::Display,
+    ops::Range,
+    rc::Rc,
+};
 
 use dyn_clone::{DynClone, clone_box, clone_trait_object};
 use itertools::Itertools;
@@ -14,15 +21,18 @@ pub struct Fail {
 
 impl Fail {
     pub fn fail(location: usize, expected: String, input: &str) -> Self {
-        let found = if location < input.len() {
-            input[location..location + 1].into()
-        } else {
-            "EOS".into()
-        };
+        let mut found = None;
+        for c in input.chars().skip(location) {
+            if !c.is_whitespace() {
+                found = Some(c.to_string());
+                break;
+            }
+        }
+
         Self {
             location,
             expected,
-            found,
+            found: found.unwrap_or("EOS".to_string()),
         }
     }
 }
@@ -182,6 +192,14 @@ where
                 if (self.predicate)(&m.value) {
                     Ok(m)
                 } else {
+                    if !parser.skipping {
+                        parser
+                            .expected
+                            .entry(start)
+                            .or_default()
+                            .insert(self.expected());
+                    }
+
                     Err(Fail::fail(start, self.expected(), input))
                 }
             }
@@ -428,6 +446,8 @@ impl Rule for Forward {
 pub struct Parser {
     skip: Option<Box<dyn Rule>>,
     lexing: Vec<()>,
+    skipping: bool,
+    expected: HashMap<usize, BTreeSet<String>>,
 }
 
 impl Parser {
@@ -435,6 +455,8 @@ impl Parser {
         Self {
             skip,
             lexing: vec![],
+            skipping: false,
+            expected: HashMap::new(),
         }
     }
 
@@ -446,7 +468,16 @@ impl Parser {
     ) -> Result<Match, Fail> {
         start = self.skip(start, input);
 
-        rule.parse(self, start, input)
+        let result = rule.parse(self, start, input);
+        if let Err(e) = &result {
+            if !self.skipping {
+                let furthest = self.expected.keys().max().cloned().unwrap_or(e.location);
+                let expected = self.expected.entry(furthest).or_default();
+                return Err(Fail::fail(furthest, expected.iter().join(","), input));
+            }
+        }
+
+        result
     }
 
     fn skip(&mut self, mut start: usize, input: &str) -> usize {
@@ -455,6 +486,7 @@ impl Parser {
         if self.lexing.is_empty() {
             if let Some(skip) = &self.skip {
                 self.lexing.push(());
+                self.skipping = true;
 
                 let skip2 = clone_box(&*skip);
                 while let Ok(m) = skip2.parse(self, start, input) {
@@ -462,6 +494,7 @@ impl Parser {
                     start = m.end;
                 }
 
+                self.skipping = false;
                 self.lexing.pop();
             }
         }
