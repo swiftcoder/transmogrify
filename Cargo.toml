@@ -7,3 +7,9 @@ edition = "2024"
 anyhow = "1.0.97"
 dyn-clone = "1.0.19"
 itertools = "0.14.0"
+
+[profile.dev]
+opt-level = 3
+
+[profile.dev.package."*"]
+opt-level = 3

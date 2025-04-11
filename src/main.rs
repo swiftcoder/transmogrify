@@ -44,7 +44,18 @@ fn main() -> anyhow::Result<()> {
         or([char_('*'), char_('/')]),
         clone_box(&*expr),
     ]);
-    let comparison = seq([clone_box(&*expr), char_('<'), clone_box(&*expr)]);
+    let comparison = seq([
+        clone_box(&*expr),
+        or([
+            char_('<'),
+            char_('>'),
+            str_("=="),
+            str_("!="),
+            str_("<="),
+            str_(">="),
+        ]),
+        clone_box(&*expr),
+    ]);
     let postfix = seq([clone_box(&*expr), str_("++")]);
     let parenthical = enclosed(char_('('), clone_box(&*expr), char_(')'));
     let field_access = seq([
@@ -86,6 +97,17 @@ fn main() -> anyhow::Result<()> {
             separated_list(clone_box(&*typed_var), char_(',')),
             char_('}'),
         ),
+    ]);
+
+    let var_decl = seq([
+        str_("var"),
+        optional(enclosed(
+            char_('<'),
+            separated_list(clone_box(&*ident), char_(',')),
+            char_('>'),
+        )),
+        clone_box(&*typed_var),
+        char_(';'),
     ]);
 
     let mut statement = forward();
@@ -145,7 +167,7 @@ fn main() -> anyhow::Result<()> {
         enclosed(char_('{'), statement, char_('}')),
     ]);
 
-    let top_level_statement = or([struct_, function_]);
+    let top_level_statement = or([struct_, var_decl, function_]);
 
     let rule = seq([repeat(top_level_statement), eof()]);
 
@@ -162,6 +184,11 @@ fn main() -> anyhow::Result<()> {
             pointCount : u32,
             point : array<PointLight>,
         }
+        var<storage> lights : LightStorage;
+
+        // Texture and sampler.
+        var baseColorSampler : sampler;
+        var baseColorTexture : texture_2d<f32>;
 
         fn fragmentMain(worldPos : vec3f,
                         normal : vec3f,
@@ -172,17 +199,21 @@ fn main() -> anyhow::Result<()> {
             let N = normalize(normal);
             var surfaceColor = vec3f(0);
 
+            // Loop over the scene point lights.
             for (var i = 0u; i < lights.pointCount; i++) {
                 let worldToLight = lights.point[i].position - worldPos;
                 let dist = length(worldToLight);
                 let dir = normalize(worldToLight);
 
+                // Determine the contribution of this light to the surface color.
                 let radiance = lights.point[i].color * (1 / pow(dist, 2));
                 let nDotL = max(dot(N, dir), 0);
 
+                // Accumulate light contribution to the surface color.
                 surfaceColor += baseColor.rgb * radiance * nDotL;
             }
 
+            // Return the accumulated surface color.
             return vec4(surfaceColor, baseColor.a);
         }
     "#,
