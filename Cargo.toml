@@ -5,4 +5,5 @@ edition = "2024"
 
 [dependencies]
 anyhow = "1.0.97"
+dyn-clone = "1.0.19"
 itertools = "0.14.0"

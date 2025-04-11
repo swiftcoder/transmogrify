@@ -1,12 +1,28 @@
-use std::{error::Error, fmt::Display};
+use std::{cell::RefCell, collections::HashMap, error::Error, fmt::Display, rc::Rc};
 
+use dyn_clone::{DynClone, clone_box, clone_trait_object};
 use itertools::Itertools;
 
-#[derive(Debug)]
+#[derive(Debug, Clone)]
 pub struct Fail {
     location: usize,
     expected: String,
     found: String,
+}
+
+impl Fail {
+    pub fn fail(location: usize, expected: String, input: &str) -> Self {
+        let found = if location < input.len() {
+            input[location..location + 1].into()
+        } else {
+            "EOS".into()
+        };
+        Self {
+            location,
+            expected,
+            found,
+        }
+    }
 }
 
 impl Display for Fail {
@@ -25,21 +41,31 @@ impl Error for Fail {
     }
 }
 
-#[derive(Debug)]
+#[derive(Debug, Clone)]
 pub enum Value {
     String(String),
     Seq(Vec<Value>),
     Eof,
 }
 
-#[derive(Debug)]
+impl Value {
+    pub fn flatten(&self) -> String {
+        match self {
+            Value::String(s) => s.into(),
+            Value::Seq(v) => v.iter().map(|i| i.flatten()).join(""),
+            _ => "".into(),
+        }
+    }
+}
+
+#[derive(Debug, Clone)]
 pub struct Match {
     start: usize,
     end: usize,
     value: Value,
 }
 
-pub trait Rule {
+pub trait Rule: DynClone {
     fn parse(&self, _parser: &mut Parser, start: usize, input: &str) -> Result<Match, Fail> {
         let found = if start < input.len() {
             input[start..start + 1].into()
@@ -57,6 +83,8 @@ pub trait Rule {
         "None".into()
     }
 }
+
+clone_trait_object!(Rule);
 
 #[derive(Clone)]
 pub struct One {}
@@ -81,13 +109,19 @@ impl Rule for One {
 }
 
 #[derive(Clone)]
-pub struct Predicate {
+pub struct Predicate<F>
+where
+    F: Fn(&Value) -> bool + Clone,
+{
     pub(crate) rule: Box<dyn Rule>,
-    pub(crate) predicate: Box<dyn Fn(&Value) -> bool>,
+    pub(crate) predicate: F,
     pub(crate) name: String,
 }
 
-impl Rule for Predicate {
+impl<F> Rule for Predicate<F>
+where
+    F: Fn(&Value) -> bool + Clone,
+{
     fn expected(&self) -> String {
         self.name.to_string()
     }
@@ -98,16 +132,7 @@ impl Rule for Predicate {
                 if (self.predicate)(&m.value) {
                     Ok(m)
                 } else {
-                    let found = if start < input.len() {
-                        input[start..start + 1].into()
-                    } else {
-                        "EOS".into()
-                    };
-                    Err(Fail {
-                        location: start,
-                        expected: self.expected(),
-                        found,
-                    })
+                    Err(Fail::fail(start, self.expected(), input))
                 }
             }
             e => e,
@@ -177,16 +202,7 @@ impl Rule for Or {
             }
         }
 
-        let found = if start < input.len() {
-            input[start..start + 1].into()
-        } else {
-            "EOS".into()
-        };
-        Err(Fail {
-            location: start,
-            expected: self.expected(),
-            found,
-        })
+        Err(Fail::fail(start, self.expected(), input))
     }
 }
 
@@ -229,14 +245,169 @@ impl Rule for Repeat {
     }
 }
 
-pub struct Parser {}
+#[derive(Clone)]
+pub struct Lexer {
+    pub(crate) rule: Box<dyn Rule>,
+}
 
-impl Parser {
-    pub fn new() -> Self {
-        Self {}
+pub fn lex(rule: Box<dyn Rule>) -> Box<dyn Rule> {
+    Box::new(Lexer { rule })
+}
+
+impl Rule for Lexer {
+    fn expected(&self) -> String {
+        self.rule.expected()
     }
 
-    fn parse_rule(&mut self, rule: &dyn Rule, start: usize, input: &str) -> Result<Match, Fail> {
+    fn parse(&self, parser: &mut Parser, start: usize, input: &str) -> Result<Match, Fail> {
+        parser.lexing.push(());
+        let result = parser.parse_rule(self.rule.as_ref(), start, input);
+        parser.lexing.pop();
+
+        result
+    }
+}
+
+#[derive(Clone)]
+pub struct Action<F>
+where
+    F: Fn(&Value) -> Value + Clone,
+{
+    pub(crate) rule: Box<dyn Rule>,
+    pub(crate) action: F,
+}
+
+impl<F> Rule for Action<F>
+where
+    F: Fn(&Value) -> Value + Clone,
+{
+    fn expected(&self) -> String {
+        self.rule.expected()
+    }
+
+    fn parse(&self, parser: &mut Parser, start: usize, input: &str) -> Result<Match, Fail> {
+        match parser.parse_rule(self.rule.as_ref(), start, input) {
+            Ok(mut m) => {
+                m.value = (self.action)(&m.value);
+                Ok(m)
+            }
+            e => e,
+        }
+    }
+}
+
+/// Forward declaration for a rule, so that it has a name that can be used recursively.
+/// You must set() the rule body before use.
+
+/// This is based on "Left recursion in Parsing Expression Grammars" by Medeiros et al
+/// https://doi.org/10.1016/j.scico.2014.01.013
+#[derive(Clone)]
+pub struct Forward {
+    rule: Rc<RefCell<Option<Box<dyn Rule>>>>,
+    memo: Rc<RefCell<HashMap<usize, Result<Match, Fail>>>>,
+}
+
+pub fn forward() -> Box<Forward> {
+    Box::new(Forward {
+        rule: Rc::new(RefCell::new(None)),
+        memo: Rc::new(RefCell::new(HashMap::new())),
+    })
+}
+
+impl Forward {
+    pub fn set(&mut self, rule: Box<dyn Rule>) {
+        *self.rule.borrow_mut() = Some(rule);
+    }
+}
+
+impl Rule for Forward {
+    fn expected(&self) -> String {
+        "ForwardDeclaration".into()
+    }
+
+    fn parse(&self, parser: &mut Parser, start: usize, input: &str) -> Result<Match, Fail> {
+        if let Some(rule) = self.rule.borrow().as_ref() {
+            // always check if we already have a memoised result first
+            if let Some(m) = self.memo.borrow().get(&start) {
+                return m.clone();
+            }
+
+            let mut longest = start;
+            let mut previous: Result<_, Fail> = Err(Fail::fail(start, self.expected(), input));
+            self.memo.borrow_mut().insert(start, previous.clone());
+
+            loop {
+                // run the parser rule over and over until it fails
+                match parser.parse_rule(rule.as_ref(), start, input) {
+                    Ok(m) => {
+                        // can early out if we parsed the entire input this way
+                        if let Value::Eof = m.value {
+                            return Ok(m);
+                        }
+
+                        if m.end > longest {
+                            // update the memo table if we found a longer match
+                            longest = m.end;
+                            previous = Ok(m);
+                            self.memo.borrow_mut().insert(start, previous.clone());
+                        } else {
+                            // no longer matches possible, return the next-longest match
+                            self.memo.borrow_mut().remove(&start);
+                            return previous;
+                        }
+                    }
+                    e => {
+                        // return failures directly
+                        return e;
+                    }
+                }
+            }
+        }
+
+        panic!("rule not set on Forward declaration");
+    }
+}
+
+pub struct Parser {
+    skip: Option<Box<dyn Rule>>,
+    lexing: Vec<()>,
+}
+
+impl Parser {
+    pub fn new(skip: Option<Box<dyn Rule>>) -> Self {
+        Self {
+            skip,
+            lexing: vec![],
+        }
+    }
+
+    fn parse_rule(
+        &mut self,
+        rule: &dyn Rule,
+        mut start: usize,
+        input: &str,
+    ) -> Result<Match, Fail> {
+        start = self.skip(start, input);
+
         rule.parse(self, start, input)
+    }
+
+    fn skip(&mut self, start: usize, input: &str) -> usize {
+        let mut result = start;
+
+        if self.lexing.is_empty() {
+            if let Some(skip) = &self.skip {
+                self.lexing.push(());
+
+                let skip2 = clone_box(&*skip);
+                if let Ok(m) = skip2.parse(self, start, input) {
+                    result = m.end;
+                }
+
+                self.lexing.pop();
+            }
+        }
+
+        result
     }
 }
