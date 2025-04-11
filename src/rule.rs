@@ -1,6 +1,6 @@
 use dyn_clone::clone_box;
 
-use crate::parse::{One, Predicate, Rule, Value, action, lex, not, or, repeat, seq};
+use crate::parse::{One, Predicate, Rule, Value, action, lex, not, or, predicate, repeat, seq};
 
 pub fn char_(c: char) -> Box<dyn Rule> {
     Box::new(Predicate {
@@ -70,6 +70,17 @@ pub fn ident_continue() -> Box<dyn Rule> {
         },
         name: "[_a-ZA-Z0-9]".into(),
     })
+}
+
+pub fn digit() -> Box<dyn Rule> {
+    predicate(
+        Box::new(One {}),
+        move |v| match v {
+            Value::String(s) => s.chars().all(|c| c.is_numeric()),
+            _ => false,
+        },
+        "\\d".into(),
+    )
 }
 
 pub fn eof() -> Box<dyn Rule> {

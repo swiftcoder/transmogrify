@@ -1,15 +1,24 @@
 use anyhow::Ok;
 use dyn_clone::clone_box;
-use parse::{Parser, Rule, forward, lex, or, repeat, seq};
-use rule::{char_, enclosed, eof, ident_continue, ident_start, separated_list, str_, whitespace};
+use parse::{One, Parser, Rule, forward, lex, not, or, repeat, seq};
+use rule::{
+    char_, digit, enclosed, eof, ident_continue, ident_start, newline, optional, separated_list,
+    str_, whitespace,
+};
 
 mod parse;
 mod rule;
 
 fn main() -> anyhow::Result<()> {
-    let mut parser = Parser::new(Some(whitespace()));
+    let skip = or([
+        seq([str_("//"), repeat(seq([not(newline()), Box::new(One {})]))]),
+        whitespace(),
+    ]);
+
+    let mut parser = Parser::new(Some(skip));
 
     let ident = lex(seq([ident_start(), repeat(ident_continue())]));
+    let number = lex(seq([digit(), repeat(digit()), optional(or([char_('u')]))]));
 
     let mut type_expr = forward();
 
@@ -25,8 +34,24 @@ fn main() -> anyhow::Result<()> {
 
     let mut expr = forward();
 
-    let addition = seq([clone_box(&*expr), char_('+'), clone_box(&*expr)]);
+    let addition = seq([
+        clone_box(&*expr),
+        or([char_('+'), char_('-')]),
+        clone_box(&*expr),
+    ]);
+    let multiplication = seq([
+        clone_box(&*expr),
+        or([char_('*'), char_('/')]),
+        clone_box(&*expr),
+    ]);
+    let comparison = seq([clone_box(&*expr), char_('<'), clone_box(&*expr)]);
+    let postfix = seq([clone_box(&*expr), str_("++")]);
     let parenthical = enclosed(char_('('), clone_box(&*expr), char_(')'));
+    let field_access = seq([
+        clone_box(&*expr) as Box<dyn Rule>,
+        char_('.'),
+        clone_box(&*ident),
+    ]);
     let array_access = seq([
         clone_box(&*expr),
         enclosed(char_('['), clone_box(&*expr), char_(']')),
@@ -42,10 +67,15 @@ fn main() -> anyhow::Result<()> {
 
     expr.set(or([
         addition,
+        multiplication,
+        comparison,
+        postfix,
+        field_access,
         array_access,
         function_call,
         parenthical,
         clone_box(&*ident),
+        clone_box(&*number),
     ]));
 
     let struct_ = seq([
@@ -66,8 +96,41 @@ fn main() -> anyhow::Result<()> {
         char_('='),
         clone_box(&*expr),
     ]);
+    let var_ = seq([
+        str_("var"),
+        clone_box(&*ident),
+        char_('='),
+        clone_box(&*expr),
+    ]);
 
-    statement.set(repeat(seq([or([let_]), char_(';')])));
+    let assign = seq([
+        clone_box(&*expr),
+        or([char_('='), str_("+="), str_("-=")]),
+        clone_box(&*expr),
+    ]);
+
+    let return_ = seq([str_("return"), clone_box(&*expr)]);
+
+    let for_ = seq([
+        str_("for"),
+        enclosed(
+            char_('('),
+            seq([
+                clone_box(&*var_),
+                char_(';'),
+                clone_box(&*expr),
+                char_(';'),
+                clone_box(&*expr),
+            ]),
+            char_(')'),
+        ),
+        enclosed(char_('{'), clone_box(&*statement), char_('}')),
+    ]);
+
+    statement.set(repeat(or([
+        seq([or([let_, var_, assign, return_]), char_(';')]),
+        for_,
+    ])));
 
     let function_ = seq([
         str_("fn"),
@@ -103,7 +166,24 @@ fn main() -> anyhow::Result<()> {
         fn fragmentMain(worldPos : vec3f,
                         normal : vec3f,
                         uv : vec2f) -> vec4f {
-            let x = foo;
+            // Sample the base color of the surface from a texture.
+            let baseColor = textureSample(baseColorTexture, baseColorSampler, uv);
+
+            let N = normalize(normal);
+            var surfaceColor = vec3f(0);
+
+            for (var i = 0u; i < lights.pointCount; i++) {
+                let worldToLight = lights.point[i].position - worldPos;
+                let dist = length(worldToLight);
+                let dir = normalize(worldToLight);
+
+                let radiance = lights.point[i].color * (1 / pow(dist, 2));
+                let nDotL = max(dot(N, dir), 0);
+
+                surfaceColor += baseColor.rgb * radiance * nDotL;
+            }
+
+            return vec4(surfaceColor, baseColor.a);
         }
     "#,
     )?;

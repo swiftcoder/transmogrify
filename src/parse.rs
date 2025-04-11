@@ -178,6 +178,17 @@ where
     pub(crate) name: String,
 }
 
+pub fn predicate<F>(rule: Box<dyn Rule>, predicate: F, name: &str) -> Box<dyn Rule>
+where
+    F: Fn(&Value) -> bool + Clone + 'static,
+{
+    Box::new(Predicate {
+        rule,
+        predicate,
+        name: name.into(),
+    })
+}
+
 impl<F> Rule for Predicate<F>
 where
     F: Fn(&Value) -> bool + Clone,
