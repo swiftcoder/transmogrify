@@ -1,7 +1,9 @@
-use std::{cell::RefCell, collections::HashMap, error::Error, fmt::Display, rc::Rc};
+use std::{cell::RefCell, collections::HashMap, error::Error, fmt::Display, ops::Range, rc::Rc};
 
 use dyn_clone::{DynClone, clone_box, clone_trait_object};
 use itertools::Itertools;
+
+use crate::rule::concat;
 
 #[derive(Debug, Clone)]
 pub struct Fail {
@@ -46,14 +48,36 @@ pub enum Value {
     String(String),
     Seq(Vec<Value>),
     Eof,
+    Empty,
 }
 
 impl Value {
-    pub fn flatten(&self) -> String {
+    pub fn flatten_string(&self) -> String {
         match self {
             Value::String(s) => s.into(),
-            Value::Seq(v) => v.iter().map(|i| i.flatten()).join(""),
+            Value::Seq(v) => v.iter().map(|i| i.flatten_string()).join(""),
             _ => "".into(),
+        }
+    }
+
+    pub fn flatten_seq(&self) -> Vec<Value> {
+        match self {
+            Value::Seq(v) => v.iter().flat_map(|i| i.flatten_seq()).collect(),
+            e @ _ => vec![e.clone()],
+        }
+    }
+
+    pub fn nth(&self, n: usize) -> Value {
+        match self {
+            Value::Seq(v) => v.get(n).cloned().unwrap_or(Value::Empty),
+            _ => Value::Empty,
+        }
+    }
+
+    pub fn slice(&self, r: Range<usize>) -> &[Value] {
+        match self {
+            Value::Seq(v) => &v[r],
+            _ => &[],
         }
     }
 }
@@ -105,6 +129,32 @@ impl Rule for One {
             end: start + 1,
             value,
         })
+    }
+}
+
+#[derive(Clone)]
+pub struct Not {
+    rule: Box<dyn Rule>,
+}
+
+pub fn not(rule: Box<dyn Rule>) -> Box<dyn Rule> {
+    Box::new(Not { rule })
+}
+
+impl Rule for Not {
+    fn expected(&self) -> String {
+        format!("!{}", self.rule.expected())
+    }
+
+    fn parse(&self, parser: &mut Parser, start: usize, input: &str) -> Result<Match, Fail> {
+        match parser.parse_rule(self.rule.as_ref(), start, input) {
+            Ok(_) => Err(Fail::fail(start, self.expected(), input)),
+            _ => Ok(Match {
+                start,
+                end: start,
+                value: Value::Empty,
+            }),
+        }
     }
 }
 
@@ -251,7 +301,7 @@ pub struct Lexer {
 }
 
 pub fn lex(rule: Box<dyn Rule>) -> Box<dyn Rule> {
-    Box::new(Lexer { rule })
+    Box::new(Lexer { rule: concat(rule) })
 }
 
 impl Rule for Lexer {
@@ -275,6 +325,13 @@ where
 {
     pub(crate) rule: Box<dyn Rule>,
     pub(crate) action: F,
+}
+
+pub fn action<F>(rule: Box<dyn Rule>, action: F) -> Box<dyn Rule>
+where
+    F: Fn(&Value) -> Value + Clone + 'static,
+{
+    Box::new(Action { rule, action })
 }
 
 impl<F> Rule for Action<F>
@@ -392,7 +449,7 @@ impl Parser {
         rule.parse(self, start, input)
     }
 
-    fn skip(&mut self, start: usize, input: &str) -> usize {
+    fn skip(&mut self, mut start: usize, input: &str) -> usize {
         let mut result = start;
 
         if self.lexing.is_empty() {
@@ -400,8 +457,9 @@ impl Parser {
                 self.lexing.push(());
 
                 let skip2 = clone_box(&*skip);
-                if let Ok(m) = skip2.parse(self, start, input) {
+                while let Ok(m) = skip2.parse(self, start, input) {
                     result = m.end;
+                    start = m.end;
                 }
 
                 self.lexing.pop();

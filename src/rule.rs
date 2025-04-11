@@ -1,6 +1,8 @@
-use crate::parse::{Action, One, Predicate, Rule, Value};
+use dyn_clone::clone_box;
 
-pub fn chr(c: char) -> Box<dyn Rule> {
+use crate::parse::{One, Predicate, Rule, Value, action, lex, not, or, repeat, seq};
+
+pub fn char_(c: char) -> Box<dyn Rule> {
     Box::new(Predicate {
         rule: Box::new(One {}),
         predicate: move |v| match v {
@@ -9,6 +11,10 @@ pub fn chr(c: char) -> Box<dyn Rule> {
         },
         name: c.to_string(),
     })
+}
+
+pub fn str_(s: &str) -> Box<dyn Rule> {
+    lex(seq(s.chars().map(|c| char_(c)).collect::<Vec<_>>()))
 }
 
 pub fn whitespace() -> Box<dyn Rule> {
@@ -77,9 +83,44 @@ pub fn eof() -> Box<dyn Rule> {
     })
 }
 
-pub fn concat(rule: Box<dyn Rule>) -> Box<dyn Rule> {
-    Box::new(Action {
-        rule,
-        action: |v| Value::String(v.flatten()),
+pub fn enclosed(
+    prefix: Box<dyn Rule>,
+    rule: Box<dyn Rule>,
+    suffix: Box<dyn Rule>,
+) -> Box<dyn Rule> {
+    action(seq([prefix, rule, suffix]), |v| match v {
+        Value::Seq(s) => s[1].clone(),
+        _ => Value::Empty,
     })
+}
+
+pub fn optional(rule: Box<dyn Rule>) -> Box<dyn Rule> {
+    or([clone_box(&*rule), not(rule)])
+}
+
+pub fn separated_list(rule: Box<dyn Rule>, separator: Box<dyn Rule>) -> Box<dyn Rule> {
+    let inner = action(
+        seq([clone_box(&*separator), clone_box(&*rule)]),
+        |v| match v {
+            e @ Value::Seq(_) => e.nth(1),
+            _ => Value::Empty,
+        },
+    );
+
+    action(
+        optional(seq([rule, repeat(inner), optional(separator)])),
+        |v| match v {
+            Value::Seq(s) => Value::Seq(
+                s[0..s.len() - 1]
+                    .iter()
+                    .flat_map(|i: &Value| i.flatten_seq())
+                    .collect(),
+            ),
+            _ => Value::Empty,
+        },
+    )
+}
+
+pub fn concat(rule: Box<dyn Rule>) -> Box<dyn Rule> {
+    action(rule, |v| Value::String(v.flatten_string()))
 }
