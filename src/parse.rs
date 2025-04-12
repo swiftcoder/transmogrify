@@ -10,7 +10,7 @@ use std::{
 use dyn_clone::{DynClone, clone_box, clone_trait_object};
 use itertools::Itertools;
 
-use crate::rule::concat;
+use crate::{cons_list::List, rule::concat};
 
 #[derive(Debug, Clone)]
 pub struct Fail {
@@ -143,21 +143,30 @@ impl Rule for One {
 }
 
 #[derive(Clone)]
-pub struct Not {
-    rule: Box<dyn Rule>,
+pub struct Not<R>
+where
+    R: Rule + Clone,
+{
+    rule: R,
 }
 
-pub fn not(rule: Box<dyn Rule>) -> Box<dyn Rule> {
-    Box::new(Not { rule })
+pub fn not<R>(rule: R) -> Not<R>
+where
+    R: Rule + Clone,
+{
+    Not { rule }
 }
 
-impl Rule for Not {
+impl<R> Rule for Not<R>
+where
+    R: Rule + Clone,
+{
     fn expected(&self) -> String {
         format!("!{}", self.rule.expected())
     }
 
     fn parse(&self, parser: &mut Parser, start: usize, input: &str) -> Result<Match, Fail> {
-        match parser.parse_rule(self.rule.as_ref(), start, input) {
+        match parser.parse_rule(&self.rule, start, input) {
             Ok(_) => Err(Fail::fail(start, self.expected(), input)),
             _ => Ok(Match {
                 start,
@@ -169,28 +178,31 @@ impl Rule for Not {
 }
 
 #[derive(Clone)]
-pub struct Predicate<F>
+pub struct Predicate<R, F>
 where
+    R: Rule + Clone,
     F: Fn(&Value) -> bool + Clone,
 {
-    pub(crate) rule: Box<dyn Rule>,
+    pub(crate) rule: R,
     pub(crate) predicate: F,
     pub(crate) name: String,
 }
 
-pub fn predicate<F>(rule: Box<dyn Rule>, predicate: F, name: &str) -> Box<dyn Rule>
+pub fn predicate<R, F>(rule: R, predicate: F, name: &str) -> Predicate<R, F>
 where
+    R: Rule + Clone,
     F: Fn(&Value) -> bool + Clone + 'static,
 {
-    Box::new(Predicate {
+    Predicate {
         rule,
         predicate,
         name: name.into(),
-    })
+    }
 }
 
-impl<F> Rule for Predicate<F>
+impl<R, F> Rule for Predicate<R, F>
 where
+    R: Rule + Clone,
     F: Fn(&Value) -> bool + Clone,
 {
     fn expected(&self) -> String {
@@ -198,7 +210,7 @@ where
     }
 
     fn parse(&self, parser: &mut Parser, start: usize, input: &str) -> Result<Match, Fail> {
-        match parser.parse_rule(self.rule.as_ref(), start, input) {
+        match parser.parse_rule(&self.rule, start, input) {
             Ok(m) => {
                 if (self.predicate)(&m.value) {
                     Ok(m)
@@ -220,34 +232,38 @@ where
 }
 
 #[derive(Clone)]
-pub struct Seq {
-    rules: Vec<Box<dyn Rule>>,
+pub struct Seq<L>
+where
+    L: List + Clone,
+{
+    rules: L,
 }
 
-pub fn seq<V: IntoIterator<Item = Box<dyn Rule>>>(rules: V) -> Box<dyn Rule> {
-    Box::new(Seq {
-        rules: rules.into_iter().collect(),
-    })
+pub fn seq<L: List + Clone>(rules: L) -> Seq<L> {
+    Seq { rules }
 }
 
-impl Rule for Seq {
+impl<L> Rule for Seq<L>
+where
+    L: List + Clone,
+{
     fn expected(&self) -> String {
-        self.rules.iter().map(|r| r.expected()).join(",")
+        self.rules.map(|r| r.expected()).join(",")
     }
 
     fn parse(&self, parser: &mut Parser, start: usize, input: &str) -> Result<Match, Fail> {
         let mut result = vec![];
         let mut end = start;
 
-        for r in &self.rules {
-            match parser.parse_rule(r.as_ref(), end, input) {
+        self.rules
+            .for_each(|r| match parser.parse_rule(r, end, input) {
                 Ok(m) => {
                     result.push(m.value);
                     end = m.end;
+                    Ok(())
                 }
-                e => return e,
-            }
-        }
+                Err(e) => Err(e),
+            })?;
 
         Ok(Match {
             start,
@@ -258,43 +274,61 @@ impl Rule for Seq {
 }
 
 #[derive(Clone)]
-pub struct Or {
-    rules: Vec<Box<dyn Rule>>,
+pub struct Or<L>
+where
+    L: List + Clone,
+{
+    rules: L,
 }
 
-pub fn or<V: IntoIterator<Item = Box<dyn Rule>>>(rules: V) -> Box<dyn Rule> {
-    Box::new(Or {
-        rules: rules.into_iter().collect(),
-    })
+pub fn or<L: List + Clone>(rules: L) -> Or<L> {
+    Or { rules }
 }
 
-impl Rule for Or {
+impl<L> Rule for Or<L>
+where
+    L: List + Clone,
+{
     fn expected(&self) -> String {
-        self.rules.iter().map(|r| r.expected()).join("|")
+        self.rules.map(|r| r.expected()).join("|")
     }
 
     fn parse(&self, parser: &mut Parser, start: usize, input: &str) -> Result<Match, Fail> {
-        for r in &self.rules {
-            match parser.parse_rule(r.as_ref(), start, input) {
-                Ok(m) => return Ok(m),
-                _ => {}
-            }
-        }
+        let mut result = Err(Fail::fail(start, self.expected(), input));
 
-        Err(Fail::fail(start, self.expected(), input))
+        let _ = self
+            .rules
+            .for_each(|r| match parser.parse_rule(r, start, input) {
+                Ok(m) => {
+                    result = Ok(m);
+                    Err(Fail::fail(start, self.expected(), input))
+                }
+                _ => Ok(()),
+            });
+
+        result
     }
 }
 
 #[derive(Clone)]
-pub struct Repeat {
-    pub(crate) rule: Box<dyn Rule>,
+pub struct Repeat<R>
+where
+    R: Rule + Clone,
+{
+    pub(crate) rule: R,
 }
 
-pub fn repeat(rule: Box<dyn Rule>) -> Box<dyn Rule> {
-    Box::new(Repeat { rule })
+pub fn repeat<R>(rule: R) -> Repeat<R>
+where
+    R: Rule + Clone,
+{
+    Repeat { rule }
 }
 
-impl Rule for Repeat {
+impl<R> Rule for Repeat<R>
+where
+    R: Rule + Clone,
+{
     fn expected(&self) -> String {
         self.rule.expected() + "*"
     }
@@ -304,7 +338,7 @@ impl Rule for Repeat {
         let mut end = start;
 
         loop {
-            match parser.parse_rule(self.rule.as_ref(), end, input) {
+            match parser.parse_rule(&self.rule, end, input) {
                 Ok(m) => {
                     if let Value::Eof = m.value {
                         break;
@@ -325,22 +359,31 @@ impl Rule for Repeat {
 }
 
 #[derive(Clone)]
-pub struct Lexer {
-    pub(crate) rule: Box<dyn Rule>,
+pub struct Lexer<R>
+where
+    R: Rule + Clone,
+{
+    pub(crate) rule: R,
 }
 
-pub fn lex(rule: Box<dyn Rule>) -> Box<dyn Rule> {
-    Box::new(Lexer { rule: concat(rule) })
+pub fn lex<R>(rule: R) -> impl Rule + Clone
+where
+    R: Rule + Clone,
+{
+    Lexer { rule: concat(rule) }
 }
 
-impl Rule for Lexer {
+impl<R> Rule for Lexer<R>
+where
+    R: Rule + Clone,
+{
     fn expected(&self) -> String {
         self.rule.expected()
     }
 
     fn parse(&self, parser: &mut Parser, start: usize, input: &str) -> Result<Match, Fail> {
         parser.lexing.push(());
-        let result = parser.parse_rule(self.rule.as_ref(), start, input);
+        let result = parser.parse_rule(&self.rule, start, input);
         parser.lexing.pop();
 
         result
@@ -348,23 +391,26 @@ impl Rule for Lexer {
 }
 
 #[derive(Clone)]
-pub struct Action<F>
+pub struct Action<R, F>
 where
+    R: Rule + Clone,
     F: Fn(&Value) -> Value + Clone,
 {
-    pub(crate) rule: Box<dyn Rule>,
+    pub(crate) rule: R,
     pub(crate) action: F,
 }
 
-pub fn action<F>(rule: Box<dyn Rule>, action: F) -> Box<dyn Rule>
+pub fn action<R, F>(rule: R, action: F) -> Action<R, F>
 where
-    F: Fn(&Value) -> Value + Clone + 'static,
+    R: Rule + Clone,
+    F: Fn(&Value) -> Value + Clone,
 {
-    Box::new(Action { rule, action })
+    Action { rule, action }
 }
 
-impl<F> Rule for Action<F>
+impl<R, F> Rule for Action<R, F>
 where
+    R: Rule + Clone,
     F: Fn(&Value) -> Value + Clone,
 {
     fn expected(&self) -> String {
@@ -372,7 +418,7 @@ where
     }
 
     fn parse(&self, parser: &mut Parser, start: usize, input: &str) -> Result<Match, Fail> {
-        match parser.parse_rule(self.rule.as_ref(), start, input) {
+        match parser.parse_rule(&self.rule, start, input) {
             Ok(mut m) => {
                 m.value = (self.action)(&m.value);
                 Ok(m)
@@ -393,11 +439,11 @@ pub struct Forward {
     memo: Rc<RefCell<HashMap<usize, Result<Match, Fail>>>>,
 }
 
-pub fn forward() -> Box<Forward> {
-    Box::new(Forward {
+pub fn forward() -> Forward {
+    Forward {
         rule: Rc::new(RefCell::new(None)),
         memo: Rc::new(RefCell::new(HashMap::new())),
-    })
+    }
 }
 
 impl Forward {

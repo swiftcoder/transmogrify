@@ -1,52 +1,58 @@
 use anyhow::Ok;
-use dyn_clone::clone_box;
 use parse::{One, Parser, Rule, forward, lex, not, or, repeat, seq};
 use rule::{
     char_, digit, enclosed, eof, ident_continue, ident_start, newline, optional, separated_list,
     str_, whitespace,
 };
 
+mod cons_list;
 mod parse;
 mod rule;
 
 fn main() -> anyhow::Result<()> {
-    let skip = or([
-        seq([str_("//"), repeat(seq([not(newline()), Box::new(One {})]))]),
+    let skip = or(list![
+        seq(list![
+            str_("//"),
+            repeat(seq(list![not(newline()), One {}]))
+        ]),
         whitespace(),
     ]);
 
-    let mut parser = Parser::new(Some(skip));
+    let mut parser = Parser::new(Some(Box::new(skip)));
 
-    let ident = lex(seq([ident_start(), repeat(ident_continue())]));
-    let number = lex(seq([digit(), repeat(digit()), optional(or([char_('u')]))]));
+    let ident = lex(seq(list![ident_start(), repeat(ident_continue())]));
+    let number = lex(seq(list![
+        digit(),
+        repeat(digit()),
+        optional(or(list![char_('u')]))
+    ]));
 
     let mut type_expr = forward();
 
-    let template_type = seq([
-        clone_box(&*type_expr),
-        enclosed(char_('<'), clone_box(&*type_expr), char_('>')),
+    let template_type = seq(list![
+        type_expr.clone(),
+        enclosed(char_('<'), type_expr.clone(), char_('>')),
     ]);
-    let type_name = clone_box(&*ident);
 
-    type_expr.set(or([template_type, type_name]));
+    type_expr.set(Box::new(or(list![template_type, ident.clone()])));
 
-    let typed_var = seq([clone_box(&*ident), char_(':'), clone_box(&*type_expr)]);
+    let typed_var = seq(list![ident.clone(), char_(':'), type_expr.clone()]);
 
     let mut expr = forward();
 
-    let addition = seq([
-        clone_box(&*expr),
-        or([char_('+'), char_('-')]),
-        clone_box(&*expr),
+    let addition = seq(list![
+        expr.clone(),
+        or(list![char_('+'), char_('-')]),
+        expr.clone(),
     ]);
-    let multiplication = seq([
-        clone_box(&*expr),
-        or([char_('*'), char_('/')]),
-        clone_box(&*expr),
+    let multiplication = seq(list![
+        expr.clone(),
+        or(list![char_('*'), char_('/')]),
+        expr.clone(),
     ]);
-    let comparison = seq([
-        clone_box(&*expr),
-        or([
+    let comparison = seq(list![
+        expr.clone(),
+        or(list![
             char_('<'),
             char_('>'),
             str_("=="),
@@ -54,29 +60,25 @@ fn main() -> anyhow::Result<()> {
             str_("<="),
             str_(">="),
         ]),
-        clone_box(&*expr),
+        expr.clone(),
     ]);
-    let postfix = seq([clone_box(&*expr), str_("++")]);
-    let parenthical = enclosed(char_('('), clone_box(&*expr), char_(')'));
-    let field_access = seq([
-        clone_box(&*expr) as Box<dyn Rule>,
-        char_('.'),
-        clone_box(&*ident),
+    let postfix = seq(list![expr.clone(), str_("++")]);
+    let parenthical = enclosed(char_('('), expr.clone(), char_(')'));
+    let field_access = seq(list![expr.clone(), char_('.'), ident.clone(),]);
+    let array_access = seq(list![
+        expr.clone(),
+        enclosed(char_('['), expr.clone(), char_(']')),
     ]);
-    let array_access = seq([
-        clone_box(&*expr),
-        enclosed(char_('['), clone_box(&*expr), char_(']')),
-    ]);
-    let function_call = seq([
-        clone_box(&*expr),
+    let function_call = seq(list![
+        expr.clone(),
         enclosed(
             char_('('),
-            separated_list(clone_box(&*expr), char_(',')),
+            separated_list(expr.clone(), char_(',')),
             char_(')'),
         ),
     ]);
 
-    expr.set(or([
+    expr.set(Box::new(or(list![
         addition,
         multiplication,
         comparison,
@@ -85,91 +87,81 @@ fn main() -> anyhow::Result<()> {
         array_access,
         function_call,
         parenthical,
-        clone_box(&*ident),
-        clone_box(&*number),
-    ]));
+        ident.clone(),
+        number.clone(),
+    ])));
 
-    let struct_ = seq([
+    let struct_ = seq(list![
         str_("struct"),
-        clone_box(&*ident),
+        ident.clone(),
         enclosed(
             char_('{'),
-            separated_list(clone_box(&*typed_var), char_(',')),
+            separated_list(typed_var.clone(), char_(',')),
             char_('}'),
         ),
     ]);
 
-    let var_decl = seq([
+    let var_decl = seq(list![
         str_("var"),
         optional(enclosed(
             char_('<'),
-            separated_list(clone_box(&*ident), char_(',')),
+            separated_list(ident.clone(), char_(',')),
             char_('>'),
         )),
-        clone_box(&*typed_var),
+        typed_var.clone(),
         char_(';'),
     ]);
 
     let mut statement = forward();
 
-    let let_ = seq([
-        str_("let"),
-        clone_box(&*ident),
-        char_('='),
-        clone_box(&*expr),
-    ]);
-    let var_ = seq([
-        str_("var"),
-        clone_box(&*ident),
-        char_('='),
-        clone_box(&*expr),
+    let let_ = seq(list![str_("let"), ident.clone(), char_('='), expr.clone(),]);
+    let var_ = seq(list![str_("var"), ident.clone(), char_('='), expr.clone(),]);
+
+    let assign = seq(list![
+        expr.clone(),
+        or(list![char_('='), str_("+="), str_("-=")]),
+        expr.clone(),
     ]);
 
-    let assign = seq([
-        clone_box(&*expr),
-        or([char_('='), str_("+="), str_("-=")]),
-        clone_box(&*expr),
-    ]);
+    let return_ = seq(list![str_("return"), expr.clone()]);
 
-    let return_ = seq([str_("return"), clone_box(&*expr)]);
-
-    let for_ = seq([
+    let for_ = seq(list![
         str_("for"),
         enclosed(
             char_('('),
-            seq([
-                clone_box(&*var_),
+            seq(list![
+                var_.clone(),
                 char_(';'),
-                clone_box(&*expr),
+                expr.clone(),
                 char_(';'),
-                clone_box(&*expr),
+                expr.clone(),
             ]),
             char_(')'),
         ),
-        enclosed(char_('{'), clone_box(&*statement), char_('}')),
+        enclosed(char_('{'), statement.clone(), char_('}')),
     ]);
 
-    statement.set(repeat(or([
-        seq([or([let_, var_, assign, return_]), char_(';')]),
+    statement.set(Box::new(repeat(or(list![
+        seq(list![or(list![let_, var_, assign, return_]), char_(';')]),
         for_,
-    ])));
+    ]))));
 
-    let function_ = seq([
+    let function_ = seq(list![
         str_("fn"),
-        clone_box(&*ident),
+        ident.clone(),
         enclosed(
             char_('('),
-            separated_list(clone_box(&*typed_var), char_(',')),
+            separated_list(typed_var.clone(), char_(',')),
             char_(')'),
         ),
         str_("->"),
-        clone_box(&*type_expr),
+        type_expr.clone(),
         enclosed(char_('{'), statement, char_('}')),
     ]);
 
-    let top_level_statement = or([struct_, var_decl, function_]);
+    let top_level_statement = or(list![struct_, var_decl, function_]);
 
-    let rule = seq([repeat(top_level_statement), eof()]);
+    let rule = seq(list![repeat(top_level_statement), eof()]);
 
     let result = rule.parse(
         &mut parser,
