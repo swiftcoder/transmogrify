@@ -1,6 +1,6 @@
 use crate::parse::Rule;
 
-// A (potentially) heterogenous list interface
+/// A (potentially) heterogenous list interface
 pub trait List {
     /// get the length of the list
     fn len(&self) -> usize;
@@ -19,10 +19,6 @@ pub trait List {
 /// An empty struct to represent the end of a heterogenous list
 #[derive(Clone)]
 pub struct Tail {}
-
-pub fn tail() -> Tail {
-    Tail {}
-}
 
 impl List for Tail {
     fn len(&self) -> usize {
@@ -54,14 +50,6 @@ where
 {
     pub head: H,
     pub tail: T,
-}
-
-pub fn cons<H, T>(head: H, tail: T) -> Cons<H, T>
-where
-    H: Rule + Clone,
-    T: List,
-{
-    Cons { head, tail }
 }
 
 impl<H, T> List for Cons<H, T>

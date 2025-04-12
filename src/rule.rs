@@ -1,5 +1,4 @@
 use crate::{
-    cons_list::{cons, tail},
     list,
     parse::{One, Rule, Value, action, lex, not, or, predicate, repeat, seq},
 };

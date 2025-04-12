@@ -17,7 +17,6 @@ Parsing experiments in rust
 - Limited action support: actions can transform the input, but with limited output formats and no side-effects
 
 ## TODO
-- Can we stop doing everything via Boxed dyn Traits?
-  - Requires figuring out heterogenous lists (in the style of frunk?)
+- ~~Can we stop doing everything via Boxed dyn Traits?~~
 - Can we support actions that build a tree of user-defined types?
 - Can we support actions that have side-effects?

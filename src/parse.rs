@@ -12,11 +12,15 @@ use itertools::Itertools;
 
 use crate::{cons_list::List, rule::concat};
 
+/// A failed parser match
 #[derive(Debug, Clone)]
 pub struct Fail {
-    location: usize,
-    expected: String,
-    found: String,
+    /// the offset in the input where the failure occured
+    pub location: usize,
+    /// The token(s) we expected to encounter at this location
+    pub expected: String,
+    /// the token which we actually encountered
+    pub found: String,
 }
 
 impl Fail {
@@ -92,11 +96,15 @@ impl Value {
     }
 }
 
+/// A successful parser match
 #[derive(Debug, Clone)]
 pub struct Match {
-    start: usize,
-    end: usize,
-    value: Value,
+    /// The starting offset of the match
+    pub start: usize,
+    /// The ending offset of the match
+    pub end: usize,
+    /// The value produced by the match
+    pub value: Value,
 }
 
 pub trait Rule: DynClone {
@@ -120,6 +128,7 @@ pub trait Rule: DynClone {
 
 clone_trait_object!(Rule);
 
+/// Matches any single token
 #[derive(Clone)]
 pub struct One {}
 
@@ -142,6 +151,9 @@ impl Rule for One {
     }
 }
 
+/// Produces a zero-length match if the provided rule does not match
+/// 
+/// Mostly useful in combination with other rules
 #[derive(Clone)]
 pub struct Not<R>
 where
@@ -177,6 +189,7 @@ where
     }
 }
 
+/// Match only if the predicate is true for the result of the provided rule
 #[derive(Clone)]
 pub struct Predicate<R, F>
 where
@@ -231,6 +244,7 @@ where
     }
 }
 
+/// Match a list of rules in sequence
 #[derive(Clone)]
 pub struct Seq<L>
 where
@@ -273,6 +287,7 @@ where
     }
 }
 
+/// Match any one of a set of rules
 #[derive(Clone)]
 pub struct Or<L>
 where
@@ -310,6 +325,9 @@ where
     }
 }
 
+/// Repeat the given rule zero or more times
+/// 
+/// Always returns a successful match, even if empty
 #[derive(Clone)]
 pub struct Repeat<R>
 where
@@ -358,6 +376,7 @@ where
     }
 }
 
+/// Suppresses token skipping while matching the given rule
 #[derive(Clone)]
 pub struct Lexer<R>
 where
@@ -390,6 +409,7 @@ where
     }
 }
 
+/// Apply the specified action to any successful match produced by the given rule
 #[derive(Clone)]
 pub struct Action<R, F>
 where
@@ -428,11 +448,12 @@ where
     }
 }
 
-/// Forward declaration for a rule, so that it has a name that can be used recursively.
-/// You must set() the rule body before use.
-
+/// Forward declaration for a rule, so that it has a name that can be used recursively
+/// 
+/// You must set() the rule body before use
+///
 /// This is based on "Left recursion in Parsing Expression Grammars" by Medeiros et al
-/// https://doi.org/10.1016/j.scico.2014.01.013
+/// <https://doi.org/10.1016/j.scico.2014.01.013>
 #[derive(Clone)]
 pub struct Forward {
     rule: Rc<RefCell<Option<Box<dyn Rule>>>>,
@@ -500,6 +521,7 @@ impl Rule for Forward {
     }
 }
 
+/// The core parser implementation
 pub struct Parser {
     skip: Option<Box<dyn Rule>>,
     lexing: Vec<()>,
@@ -508,6 +530,7 @@ pub struct Parser {
 }
 
 impl Parser {
+    /// Initialise a parser, optionally using a rule to skip tokens
     pub fn new(skip: Option<Box<dyn Rule>>) -> Self {
         Self {
             skip,
