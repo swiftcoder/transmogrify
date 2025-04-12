@@ -7,7 +7,6 @@ use std::{
     rc::Rc,
 };
 
-use dyn_clone::{DynClone, clone_box, clone_trait_object};
 use itertools::Itertools;
 
 use crate::{cons_list::List, rule::concat};
@@ -107,7 +106,7 @@ pub struct Match {
     pub value: Value,
 }
 
-pub trait Rule: DynClone {
+pub trait Rule {
     fn parse(&self, _parser: &mut Parser, start: usize, input: &str) -> Result<Match, Fail> {
         let found = if start < input.len() {
             input[start..start + 1].into()
@@ -125,8 +124,6 @@ pub trait Rule: DynClone {
         "None".into()
     }
 }
-
-clone_trait_object!(Rule);
 
 /// Matches any single token
 #[derive(Clone)]
@@ -152,7 +149,7 @@ impl Rule for One {
 }
 
 /// Produces a zero-length match if the provided rule does not match
-/// 
+///
 /// Mostly useful in combination with other rules
 #[derive(Clone)]
 pub struct Not<R>
@@ -326,7 +323,7 @@ where
 }
 
 /// Repeat the given rule zero or more times
-/// 
+///
 /// Always returns a successful match, even if empty
 #[derive(Clone)]
 pub struct Repeat<R>
@@ -449,7 +446,7 @@ where
 }
 
 /// Forward declaration for a rule, so that it has a name that can be used recursively
-/// 
+///
 /// You must set() the rule body before use
 ///
 /// This is based on "Left recursion in Parsing Expression Grammars" by Medeiros et al
@@ -564,18 +561,26 @@ impl Parser {
         let mut result = start;
 
         if self.lexing.is_empty() {
-            if let Some(skip) = &self.skip {
+            // have to temporarily take the skip rule to avoid a double-borrow
+            if let Some(skip) = self.skip.take() {
                 self.lexing.push(());
                 self.skipping = true;
 
-                let skip2 = clone_box(&*skip);
-                while let Ok(m) = skip2.parse(self, start, input) {
-                    result = m.end;
-                    start = m.end;
+                loop {
+                    match skip.parse(self, start, input) {
+                        Ok(m) => {
+                            result = m.end;
+                            start = m.end;
+                        }
+                        Err(_) => break,
+                    }
                 }
 
                 self.skipping = false;
                 self.lexing.pop();
+
+                // make sure we put the skip rule back when we are done
+                self.skip = Some(skip);
             }
         }
 
